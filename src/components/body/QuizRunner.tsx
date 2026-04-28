@@ -1,11 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Trophy, RotateCcw, Play, Loader2 } from 'lucide-react'; // Added Loader2 icon
+import { Trophy, RotateCcw, Play, Loader2, Send } from 'lucide-react'; 
 import Player from '../../assets/player.png';
 import GameOverSound from '../../assets/faaaa.mp3'; 
 import JumpSound from '../../assets/jump.mp3'; 
 import CorrectSound from '../../assets/correct1.mp3'; 
 
-// --- GAME CONSTANTS ---
 const GRAVITY = 0.3;
 const JUMP_STRENGTH = 10;
 const GAME_SPEED = 4;
@@ -13,7 +12,6 @@ const GAME_WIDTH = 800;
 const GROUND_Y = 15;
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzqqWnXbX_zZ1i34rhWhIo6xhZwTWnJ0i5lHorJm22ufh9cc-iZ2UNykCuKfxEuP4Wj4A/exec";
 
-// Type definition for our new dynamic questions
 type QuestionType = {
   question: string;
   options: { text: string; isCorrect: boolean }[];
@@ -23,19 +21,21 @@ export default function QuizRunner() {
   const [playerName, setPlayerName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   
-  // NEW STATES FOR DYNAMIC QUESTIONS
+  // -- FEEDBACK STATES --
+  const [feedbackText, setFeedbackText] = useState('');
+  const [isSendingFeedback, setIsSendingFeedback] = useState(false);
+  const [feedbackSent, setFeedbackSent] = useState(false);
+  
   const [questions, setQuestions] = useState<QuestionType[]>([]);
   const [isLoadingDB, setIsLoadingDB] = useState(true);
 
   const playerNameRef = useRef('');
 
-  // UI State
   const [gameState, setGameState] = useState('start'); 
   const [score, setScore] = useState(0);
   const [qIndex, setQIndex] = useState(0);
   const [optIndex, setOptIndex] = useState(0);
 
-  // Physics Refs 
   const playerY = useRef(GROUND_Y);
   const velocityY = useRef(0);
   const isJumping = useRef(false);
@@ -44,28 +44,22 @@ export default function QuizRunner() {
   const requestRef = useRef<number | null>(null);
   const gameInfo = useRef({ qIndex: 0, optIndex: 0, isPlaying: false, score: 0 });
 
-  // --- AUDIO REFS ---
   const jumpAudioRef = useRef<HTMLAudioElement | null>(null);
   const correctAudioRef = useRef<HTMLAudioElement | null>(null);
   const gameOverAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // FETCH QUESTIONS ON MOUNT
   useEffect(() => {
-    // Audio Preload
     jumpAudioRef.current = new Audio(JumpSound);
     jumpAudioRef.current.volume = 0.5; 
     correctAudioRef.current = new Audio(CorrectSound);
     gameOverAudioRef.current = new Audio(GameOverSound);
 
-    // Fetch DB
     const fetchQuestions = async () => {
       try {
-        // GET request to Google Apps Script
         const response = await fetch(GOOGLE_SCRIPT_URL);
         const result = await response.json();
         
         if (result.status === 'success' && result.data.length > 0) {
-          // Format the data to match what the game engine expects
           const formattedQuestions: QuestionType[] = result.data.map((q: any) => ({
             question: q.question,
             options: [
@@ -95,7 +89,6 @@ export default function QuizRunner() {
     }
   };
 
-  // --- ACTIONS ---
   const jump = useCallback(() => {
     if (!isJumping.current && gameInfo.current.isPlaying) {
       isJumping.current = true;
@@ -112,12 +105,12 @@ export default function QuizRunner() {
     try {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: "POST",
-        mode: "no-cors", // Required for POST to avoid CORS
+        mode: "no-cors", 
         headers: {
-
-          "Content-Type": "text/plain;charset=utf-8",
+          "Content-Type": "text/plain;charset=utf-8", 
         },
         body: JSON.stringify({
+          type: "score", // <-- Tells backend this is a score update
           name: currentName, 
           score: finalScore
         }),
@@ -126,6 +119,34 @@ export default function QuizRunner() {
       console.error("Failed to save score:", error);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // --- NEW FEEDBACK FUNCTION ---
+  const sendFeedbackToSheet = async () => {
+    const currentName = playerNameRef.current;
+    if (!feedbackText.trim()) return;
+
+    setIsSendingFeedback(true);
+    try {
+      await fetch(GOOGLE_SCRIPT_URL, {
+        method: "POST",
+        mode: "no-cors",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+        },
+        body: JSON.stringify({
+          type: "feedback", // <-- Tells backend this is feedback
+          name: currentName,
+          feedback: feedbackText
+        }),
+      });
+      setFeedbackSent(true);
+      setFeedbackText('');
+    } catch (error) {
+      console.error("Failed to send feedback:", error);
+    } finally {
+      setIsSendingFeedback(false);
     }
   };
 
@@ -138,6 +159,8 @@ export default function QuizRunner() {
     setScore(0);
     setQIndex(0);
     setOptIndex(0);
+    setFeedbackSent(false); // Reset feedback UI when they play again
+    setFeedbackText('');
     gameInfo.current = { qIndex: 0, optIndex: 0, isPlaying: true, score: 0 }; 
     
     playerY.current = GROUND_Y;
@@ -178,7 +201,6 @@ export default function QuizRunner() {
     saveScoreToSheet(gameInfo.current.score); 
   };
 
-  // --- GAME ENGINE LOOP ---
   const gameLoop = useCallback(() => {
     if (!gameInfo.current.isPlaying) return;
 
@@ -234,9 +256,8 @@ export default function QuizRunner() {
     if (obstacleEl) obstacleEl.style.transform = `translateX(${obstacleX.current}px)`;
 
     requestRef.current = requestAnimationFrame(gameLoop);
-  }, [questions]); // Dependency added to sync with fetched questions
+  }, [questions]);
 
-  // --- LIFECYCLE ---
   useEffect(() => {
     if (gameState === 'playing') {
       requestRef.current = requestAnimationFrame(gameLoop);
@@ -248,29 +269,29 @@ export default function QuizRunner() {
     };
   }, [gameState, gameLoop]);
 
-  // Keyboard controls
+// Keyboard controls
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' || e.code === 'ArrowUp') {
-        e.preventDefault();
-        if (gameState === 'playing') jump();
+      // FIX: Only prevent default spacebar behavior IF the game is actively running
+      if (gameState === 'playing' && (e.code === 'Space' || e.code === 'ArrowUp')) {
+        e.preventDefault(); 
+        jump();
       }
     };
+    
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [gameState, jump]);
 
-  // If DB is loading, show loading screen
   if (isLoadingDB) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-white p-4">
         <Loader2 className="animate-spin text-pink-500 mb-4" size={48} />
-        <h2 className="text-2xl font-bold animate-pulse">Loading Questions...</h2>
+        <h2 className="text-2xl font-bold animate-pulse">Loading Game Data...</h2>
       </div>
     );
   }
 
-  // If DB fails and returns no questions
   if (questions.length === 0) {
     return (
       <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
@@ -289,7 +310,7 @@ export default function QuizRunner() {
         <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full border border-white/20 relative">
           <Trophy className="text-yellow-400" size={20} />
           <span className="font-bold tracking-wide">SCORE: {score}</span>
-          {isSaving && <span className="absolute -bottom-6 left-2 text-xs text-pink-400 animate-pulse">Saving...</span>}
+          {isSaving && <span className="absolute -bottom-6 left-2 text-xs text-pink-400 animate-pulse">Saving Score...</span>}
         </div>
         <div className="text-slate-400 text-sm">Level {qIndex + 1} / {questions.length}</div>
       </div>
@@ -379,9 +400,39 @@ export default function QuizRunner() {
         )}
 
         {gameState === 'gameover' && (
-          <div className="absolute inset-0 bg-red-950/90 backdrop-blur-sm flex flex-col items-center justify-center z-30 animate-fadeIn">
-            <h2 className="text-4xl font-black text-red-500 mb-2">GAME OVER</h2>
-            <p className="text-slate-300 mb-6 text-lg">You hit the wrong answer!</p>
+          <div className="absolute inset-0 bg-red-950/95 backdrop-blur-sm flex flex-col items-center justify-center z-30 animate-fadeIn p-4 overflow-y-auto">
+            <h2 className="text-4xl font-black text-red-500 mb-1">GAME OVER</h2>
+            <p className="text-slate-300 mb-4 text-lg">You hit the wrong answer!</p>
+            
+            {/* NEW FEEDBACK FORM */}
+            <div className="w-full max-w-sm bg-black/40 p-5 rounded-2xl border border-white/10 mb-6 shadow-xl">
+              <h3 className="text-sm font-bold text-slate-200 mb-3 text-center">Any message for me?</h3>
+              
+              {!feedbackSent ? (
+                <div className="flex flex-col gap-3">
+                  <textarea 
+                    placeholder="Tell me what you think..." 
+                    value={feedbackText}
+                    onChange={(e) => setFeedbackText(e.target.value)}
+                    className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600 rounded-xl text-white text-sm placeholder-slate-400 focus:outline-none focus:border-pink-500 resize-none h-20 transition-colors"
+                  />
+                  <button 
+                    onClick={sendFeedbackToSheet}
+                    disabled={!feedbackText.trim() || isSendingFeedback}
+                    className="flex items-center justify-center gap-2 w-full py-2.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors"
+                  >
+                    {isSendingFeedback ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+                    {isSendingFeedback ? "Sending..." : "Submit Feedback"}
+                  </button>
+                </div>
+              ) : (
+                <div className="text-center py-4 bg-green-500/10 rounded-xl border border-green-500/30">
+                  <p className="text-green-400 font-bold">Feedback Sent! 💖</p>
+                  <p className="text-xs text-slate-300 mt-1">Thank you for letting me know.</p>
+                </div>
+              )}
+            </div>
+
             <button onClick={startGame} className="flex items-center gap-2 px-8 py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-full transition-transform hover:scale-105">
               <RotateCcw size={20} /> Try Again
             </button>
