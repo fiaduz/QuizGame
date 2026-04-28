@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Trophy, RotateCcw, Play } from 'lucide-react';
 import Player from '../../assets/player.png';
+import GameOverSound from '../../assets/faaaa.mp3'; 
+import JumpSound from '../../assets/jump.mp3'; 
+import CorrectSound from '../../assets/correct.mp3'; // <-- Imported correct answer sound
 import { QUESTIONS } from '../constants/Questions';
 
 // --- GAME CONSTANTS ---
@@ -29,9 +32,7 @@ export default function QuizRunner() {
   const isJumping = useRef(false);
   const obstacleX = useRef(GAME_WIDTH);
   
-  // TypeScript Fix: explicitly state this ref can hold a number or null
   const requestRef = useRef<number | null>(null);
-  
   const gameInfo = useRef({ qIndex: 0, optIndex: 0, isPlaying: false, score: 0 });
 
   // --- ACTIONS ---
@@ -39,10 +40,14 @@ export default function QuizRunner() {
     if (!isJumping.current && gameInfo.current.isPlaying) {
       isJumping.current = true;
       velocityY.current = JUMP_STRENGTH;
+      
+      // --- PLAY JUMP SOUND ---
+      const audio = new Audio(JumpSound);
+      audio.volume = 0.5; 
+      audio.play().catch(e => console.error("Browser blocked audio autoplay:", e));
     }
   }, []);
 
-  // TypeScript Fix: define finalScore as a number
   const saveScoreToSheet = async (finalScore: number) => {
     const currentName = playerNameRef.current;
     if (!currentName.trim()) return; 
@@ -89,6 +94,10 @@ export default function QuizRunner() {
   const handleCorrectAnswer = () => {
     gameInfo.current.isPlaying = false;
     
+    // --- PLAY CORRECT SOUND EFFECT ---
+    const audio = new Audio(CorrectSound);
+    audio.play().catch(e => console.error("Browser blocked audio autoplay:", e));
+    
     gameInfo.current.score += 10;
     const newScore = gameInfo.current.score;
     setScore(newScore); 
@@ -111,6 +120,11 @@ export default function QuizRunner() {
   const handleGameOver = () => {
     gameInfo.current.isPlaying = false;
     setGameState('gameover');
+    
+    // --- PLAY GAME OVER SOUND ---
+    const audio = new Audio(GameOverSound);
+    audio.play().catch(e => console.error("Browser blocked audio autoplay:", e));
+    
     saveScoreToSheet(gameInfo.current.score); 
   };
 
@@ -136,7 +150,6 @@ export default function QuizRunner() {
     // 3. Collision Detection
     const buffer = 4;
 
-    // TypeScript Fix: Removed unused pTop and oBottom variables
     const pLeft = 50 + buffer; 
     const pRight = 150 - buffer; 
     const pBottom = playerY.current + buffer; 
@@ -186,7 +199,6 @@ export default function QuizRunner() {
       requestRef.current = requestAnimationFrame(gameLoop);
     }
     return () => {
-      // TypeScript Fix: Ensure it's not null before cancelling
       if (requestRef.current !== null) {
         cancelAnimationFrame(requestRef.current);
       }
@@ -195,7 +207,6 @@ export default function QuizRunner() {
 
   // Keyboard controls
   useEffect(() => {
-    // TypeScript Fix: Add type KeyboardEvent
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' || e.code === 'ArrowUp') {
         e.preventDefault();
