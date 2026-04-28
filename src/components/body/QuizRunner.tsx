@@ -338,7 +338,7 @@ export default function QuizRunner() {
 
             <div 
               id="player-sprite"
-              className="absolute left-[50px] w-[100px] h-[100px] z-10"
+              className="absolute left-[50px] w-[100px] h-[100px] z-20"
               style={{ bottom: `${GROUND_Y}px` }}
             >
               <img src={Player} alt="Player" className={`w-full h-full object-contain ${!isJumping.current ? 'animate-runBounce' : ''}`} /> 
