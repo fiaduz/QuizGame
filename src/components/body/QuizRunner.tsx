@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Trophy, RotateCcw, Play } from 'lucide-react';
+import { Trophy, RotateCcw, Play, Loader2 } from 'lucide-react'; // Added Loader2 icon
 import Player from '../../assets/player.png';
 import GameOverSound from '../../assets/faaaa.mp3'; 
 import JumpSound from '../../assets/jump.mp3'; 
 import CorrectSound from '../../assets/correct1.mp3'; 
-import { QUESTIONS } from '../constants/Questions';
 
 // --- GAME CONSTANTS ---
 const GRAVITY = 0.3;
@@ -14,10 +13,20 @@ const GAME_WIDTH = 800;
 const GROUND_Y = 15;
 const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzqqWnXbX_zZ1i34rhWhIo6xhZwTWnJ0i5lHorJm22ufh9cc-iZ2UNykCuKfxEuP4Wj4A/exec";
 
+// Type definition for our new dynamic questions
+type QuestionType = {
+  question: string;
+  options: { text: string; isCorrect: boolean }[];
+};
+
 export default function QuizRunner() {
   const [playerName, setPlayerName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   
+  // NEW STATES FOR DYNAMIC QUESTIONS
+  const [questions, setQuestions] = useState<QuestionType[]>([]);
+  const [isLoadingDB, setIsLoadingDB] = useState(true);
+
   const playerNameRef = useRef('');
 
   // UI State
@@ -35,24 +44,53 @@ export default function QuizRunner() {
   const requestRef = useRef<number | null>(null);
   const gameInfo = useRef({ qIndex: 0, optIndex: 0, isPlaying: false, score: 0 });
 
-  // --- AUDIO PRELOADING SYSTEM ---
+  // --- AUDIO REFS ---
   const jumpAudioRef = useRef<HTMLAudioElement | null>(null);
   const correctAudioRef = useRef<HTMLAudioElement | null>(null);
   const gameOverAudioRef = useRef<HTMLAudioElement | null>(null);
 
+  // FETCH QUESTIONS ON MOUNT
   useEffect(() => {
-    // Preload audio objects once when the component mounts
+    // Audio Preload
     jumpAudioRef.current = new Audio(JumpSound);
-    jumpAudioRef.current.volume = 0.5; // Lower jump volume slightly
-    
+    jumpAudioRef.current.volume = 0.5; 
     correctAudioRef.current = new Audio(CorrectSound);
     gameOverAudioRef.current = new Audio(GameOverSound);
+
+    // Fetch DB
+    const fetchQuestions = async () => {
+      try {
+        // GET request to Google Apps Script
+        const response = await fetch(GOOGLE_SCRIPT_URL);
+        const result = await response.json();
+        
+        if (result.status === 'success' && result.data.length > 0) {
+          // Format the data to match what the game engine expects
+          const formattedQuestions: QuestionType[] = result.data.map((q: any) => ({
+            question: q.question,
+            options: [
+              { text: q.opt1, isCorrect: q.correctOpt === 1 },
+              { text: q.opt2, isCorrect: q.correctOpt === 2 },
+              { text: q.opt3, isCorrect: q.correctOpt === 3 },
+            ]
+          }));
+          setQuestions(formattedQuestions);
+        } else {
+          console.error("No questions found or error in DB.");
+        }
+      } catch (error) {
+        console.error("Failed to fetch questions", error);
+      } finally {
+        setIsLoadingDB(false);
+      }
+    };
+
+    fetchQuestions();
   }, []);
 
-  // Helper function to play sound instantly without overlap lag
   const playSound = (audioRef: React.MutableRefObject<HTMLAudioElement | null>) => {
     if (audioRef.current) {
-      audioRef.current.currentTime = 0; // Rewind to start
+      audioRef.current.currentTime = 0; 
       audioRef.current.play().catch(e => console.error("Audio error:", e));
     }
   };
@@ -62,8 +100,7 @@ export default function QuizRunner() {
     if (!isJumping.current && gameInfo.current.isPlaying) {
       isJumping.current = true;
       velocityY.current = JUMP_STRENGTH;
-      
-      playSound(jumpAudioRef); // Play jump sound instantly
+      playSound(jumpAudioRef);
     }
   }, []);
 
@@ -75,9 +112,10 @@ export default function QuizRunner() {
     try {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: "POST",
-        mode: "no-cors", 
+        mode: "no-cors", // Required for POST to avoid CORS
         headers: {
-          "Content-Type": "application/json",
+
+          "Content-Type": "text/plain;charset=utf-8",
         },
         body: JSON.stringify({
           name: currentName, 
@@ -112,8 +150,7 @@ export default function QuizRunner() {
 
   const handleCorrectAnswer = () => {
     gameInfo.current.isPlaying = false;
-    
-    playSound(correctAudioRef); // Play correct sound instantly
+    playSound(correctAudioRef); 
     
     gameInfo.current.score += 10;
     const newScore = gameInfo.current.score;
@@ -121,7 +158,7 @@ export default function QuizRunner() {
     
     setTimeout(() => {
       const nextQ = gameInfo.current.qIndex + 1;
-      if (nextQ >= QUESTIONS.length) {
+      if (nextQ >= questions.length) {
         setGameState('victory');
         saveScoreToSheet(newScore); 
       } else {
@@ -137,9 +174,7 @@ export default function QuizRunner() {
   const handleGameOver = () => {
     gameInfo.current.isPlaying = false;
     setGameState('gameover');
-    
-    playSound(gameOverAudioRef); // Play game over sound instantly
-    
+    playSound(gameOverAudioRef); 
     saveScoreToSheet(gameInfo.current.score); 
   };
 
@@ -147,7 +182,6 @@ export default function QuizRunner() {
   const gameLoop = useCallback(() => {
     if (!gameInfo.current.isPlaying) return;
 
-    // 1. Apply Physics to Player
     if (isJumping.current) {
       playerY.current += velocityY.current;
       velocityY.current -= GRAVITY;
@@ -159,16 +193,12 @@ export default function QuizRunner() {
       }
     }
 
-    // 2. Move Obstacle
     obstacleX.current -= GAME_SPEED;
 
-    // 3. Collision Detection
     const buffer = 4;
-
     const pLeft = 50 + buffer; 
     const pRight = 150 - buffer; 
     const pBottom = playerY.current + buffer; 
-
     const oLeft = obstacleX.current + buffer; 
     const oRight = obstacleX.current + 20 - buffer; 
     const oTop = 50 - buffer;
@@ -176,7 +206,7 @@ export default function QuizRunner() {
     const isColliding = pRight > oLeft && pLeft < oRight && pBottom < oTop;
 
     if (isColliding) {
-      const currentQ = QUESTIONS[gameInfo.current.qIndex];
+      const currentQ = questions[gameInfo.current.qIndex];
       const currentOpt = currentQ.options[gameInfo.current.optIndex];
 
       if (currentOpt.isCorrect) {
@@ -188,17 +218,15 @@ export default function QuizRunner() {
       }
     }
 
-    // 4. Cycle to Next Option
     if (obstacleX.current < -100) { 
       obstacleX.current = GAME_WIDTH;
-      const currentQ = QUESTIONS[gameInfo.current.qIndex];
+      const currentQ = questions[gameInfo.current.qIndex];
       const nextOpt = (gameInfo.current.optIndex + 1) % currentQ.options.length;
       
       setOptIndex(nextOpt);
       gameInfo.current.optIndex = nextOpt;
     }
 
-    // 5. Update DOM directly
     const playerEl = document.getElementById('player-sprite');
     const obstacleEl = document.getElementById('obstacle-sprite');
     
@@ -206,7 +234,7 @@ export default function QuizRunner() {
     if (obstacleEl) obstacleEl.style.transform = `translateX(${obstacleX.current}px)`;
 
     requestRef.current = requestAnimationFrame(gameLoop);
-  }, []);
+  }, [questions]); // Dependency added to sync with fetched questions
 
   // --- LIFECYCLE ---
   useEffect(() => {
@@ -232,7 +260,26 @@ export default function QuizRunner() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [gameState, jump]);
 
-  const currentQuestion = QUESTIONS[qIndex];
+  // If DB is loading, show loading screen
+  if (isLoadingDB) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-white p-4">
+        <Loader2 className="animate-spin text-pink-500 mb-4" size={48} />
+        <h2 className="text-2xl font-bold animate-pulse">Loading Questions...</h2>
+      </div>
+    );
+  }
+
+  // If DB fails and returns no questions
+  if (questions.length === 0) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
+        <h2>Error: Could not load questions from database.</h2>
+      </div>
+    );
+  }
+
+  const currentQuestion = questions[qIndex];
   const currentOption = currentQuestion?.options[optIndex];
 
   return (
@@ -244,7 +291,7 @@ export default function QuizRunner() {
           <span className="font-bold tracking-wide">SCORE: {score}</span>
           {isSaving && <span className="absolute -bottom-6 left-2 text-xs text-pink-400 animate-pulse">Saving...</span>}
         </div>
-        <div className="text-slate-400 text-sm">Level {qIndex + 1} / {QUESTIONS.length}</div>
+        <div className="text-slate-400 text-sm">Level {qIndex + 1} / {questions.length}</div>
       </div>
 
       <div 
@@ -256,7 +303,7 @@ export default function QuizRunner() {
           <div className="absolute top-6 left-0 right-0 z-20 flex justify-center animate-slideDown">
             <div className="bg-slate-800/90 backdrop-blur border border-purple-500/30 px-8 py-3 rounded-xl shadow-lg">
               <h2 className="text-xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-purple-300 to-pink-300">
-                {currentQuestion.question}
+                {currentQuestion?.question}
               </h2>
               <p className="text-xs text-center text-slate-400 mt-1">Jump over wrong answers. Hit the correct one!</p>
             </div>
