@@ -3,7 +3,7 @@ import { Trophy, RotateCcw, Play } from 'lucide-react';
 import Player from '../../assets/player.png';
 import GameOverSound from '../../assets/faaaa.mp3'; 
 import JumpSound from '../../assets/jump.mp3'; 
-import CorrectSound from '../../assets/correct.mp3'; // <-- Imported correct answer sound
+import CorrectSound from '../../assets/correct1.mp3'; 
 import { QUESTIONS } from '../constants/Questions';
 
 // --- GAME CONSTANTS ---
@@ -21,7 +21,7 @@ export default function QuizRunner() {
   const playerNameRef = useRef('');
 
   // UI State
-  const [gameState, setGameState] = useState('start'); // 'start', 'playing', 'gameover', 'victory'
+  const [gameState, setGameState] = useState('start'); 
   const [score, setScore] = useState(0);
   const [qIndex, setQIndex] = useState(0);
   const [optIndex, setOptIndex] = useState(0);
@@ -35,16 +35,35 @@ export default function QuizRunner() {
   const requestRef = useRef<number | null>(null);
   const gameInfo = useRef({ qIndex: 0, optIndex: 0, isPlaying: false, score: 0 });
 
+  // --- AUDIO PRELOADING SYSTEM ---
+  const jumpAudioRef = useRef<HTMLAudioElement | null>(null);
+  const correctAudioRef = useRef<HTMLAudioElement | null>(null);
+  const gameOverAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    // Preload audio objects once when the component mounts
+    jumpAudioRef.current = new Audio(JumpSound);
+    jumpAudioRef.current.volume = 0.5; // Lower jump volume slightly
+    
+    correctAudioRef.current = new Audio(CorrectSound);
+    gameOverAudioRef.current = new Audio(GameOverSound);
+  }, []);
+
+  // Helper function to play sound instantly without overlap lag
+  const playSound = (audioRef: React.MutableRefObject<HTMLAudioElement | null>) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = 0; // Rewind to start
+      audioRef.current.play().catch(e => console.error("Audio error:", e));
+    }
+  };
+
   // --- ACTIONS ---
   const jump = useCallback(() => {
     if (!isJumping.current && gameInfo.current.isPlaying) {
       isJumping.current = true;
       velocityY.current = JUMP_STRENGTH;
       
-      // --- PLAY JUMP SOUND ---
-      const audio = new Audio(JumpSound);
-      audio.volume = 0.5; 
-      audio.play().catch(e => console.error("Browser blocked audio autoplay:", e));
+      playSound(jumpAudioRef); // Play jump sound instantly
     }
   }, []);
 
@@ -94,9 +113,7 @@ export default function QuizRunner() {
   const handleCorrectAnswer = () => {
     gameInfo.current.isPlaying = false;
     
-    // --- PLAY CORRECT SOUND EFFECT ---
-    const audio = new Audio(CorrectSound);
-    audio.play().catch(e => console.error("Browser blocked audio autoplay:", e));
+    playSound(correctAudioRef); // Play correct sound instantly
     
     gameInfo.current.score += 10;
     const newScore = gameInfo.current.score;
@@ -121,9 +138,7 @@ export default function QuizRunner() {
     gameInfo.current.isPlaying = false;
     setGameState('gameover');
     
-    // --- PLAY GAME OVER SOUND ---
-    const audio = new Audio(GameOverSound);
-    audio.play().catch(e => console.error("Browser blocked audio autoplay:", e));
+    playSound(gameOverAudioRef); // Play game over sound instantly
     
     saveScoreToSheet(gameInfo.current.score); 
   };
