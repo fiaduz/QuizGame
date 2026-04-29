@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Trophy, RotateCcw, Play, Loader2, Send } from 'lucide-react'; 
+import { Trophy, RotateCcw, Play, Loader2, Send, MapPin, Medal } from 'lucide-react'; 
 import Player from '../../assets/player.png';
 import GameOverSound from '../../assets/faaaa.mp3'; 
 import JumpSound from '../../assets/jump.mp3'; 
@@ -10,26 +10,27 @@ const JUMP_STRENGTH = 10;
 const GAME_SPEED = 4;
 const GAME_WIDTH = 800;
 const GROUND_Y = 15;
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzqqWnXbX_zZ1i34rhWhIo6xhZwTWnJ0i5lHorJm22ufh9cc-iZ2UNykCuKfxEuP4Wj4A/exec";
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwozg_pEZ3jpGymOJqSu0mSNF-c1iFfAitQyN0s-xmalcHmW0aCph1py9plLksnDrS6/exec";
 
-type QuestionType = {
-  question: string;
-  options: { text: string; isCorrect: boolean }[];
-};
+type QuestionType = { question: string; options: { text: string; isCorrect: boolean }[]; };
+type LeaderboardEntry = { name: string; location: string; score: number };
 
 export default function QuizRunner() {
   const [playerName, setPlayerName] = useState('');
+  const [playerLocation, setPlayerLocation] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [deviceId, setDeviceId] = useState('');
   
-  // -- FEEDBACK STATES --
   const [feedbackText, setFeedbackText] = useState('');
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState(false);
   
   const [questions, setQuestions] = useState<QuestionType[]>([]);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [isLoadingDB, setIsLoadingDB] = useState(true);
 
   const playerNameRef = useRef('');
+  const playerLocationRef = useRef('');
 
   const [gameState, setGameState] = useState('start'); 
   const [score, setScore] = useState(0);
@@ -49,18 +50,30 @@ export default function QuizRunner() {
   const gameOverAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
+    // Check if this browser already has a secret ID
+    let storedId = localStorage.getItem('quiz_runner_uid');
+    
+    // If not, create a random one and save it!
+    if (!storedId) {
+      storedId = 'player_' + Math.random().toString(36).substring(2, 15);
+      localStorage.setItem('quiz_runner_uid', storedId);
+    }
+    setDeviceId(storedId);
+  }, []);
+  useEffect(() => {
     jumpAudioRef.current = new Audio(JumpSound);
     jumpAudioRef.current.volume = 0.5; 
     correctAudioRef.current = new Audio(CorrectSound);
     gameOverAudioRef.current = new Audio(GameOverSound);
 
-    const fetchQuestions = async () => {
+    const fetchData = async () => {
       try {
-        const response = await fetch(GOOGLE_SCRIPT_URL);
-        const result = await response.json();
+        // Fetch Questions
+        const qRes = await fetch(GOOGLE_SCRIPT_URL);
+        const qResult = await qRes.json();
         
-        if (result.status === 'success' && result.data.length > 0) {
-          const formattedQuestions: QuestionType[] = result.data.map((q: any) => ({
+        if (qResult.status === 'success' && qResult.data.length > 0) {
+          const formattedQuestions: QuestionType[] = qResult.data.map((q: any) => ({
             question: q.question,
             options: [
               { text: q.opt1, isCorrect: q.correctOpt === 1 },
@@ -69,17 +82,23 @@ export default function QuizRunner() {
             ]
           }));
           setQuestions(formattedQuestions);
-        } else {
-          console.error("No questions found or error in DB.");
         }
+
+        // Fetch Leaderboard
+        const lRes = await fetch(`${GOOGLE_SCRIPT_URL}?action=getLeaderboard`);
+        const lResult = await lRes.json();
+        if (lResult.status === 'success') {
+          setLeaderboard(lResult.data);
+        }
+
       } catch (error) {
-        console.error("Failed to fetch questions", error);
+        console.error("Failed to fetch data", error);
       } finally {
         setIsLoadingDB(false);
       }
     };
 
-    fetchQuestions();
+    fetchData();
   }, []);
 
   const playSound = (audioRef: React.MutableRefObject<HTMLAudioElement | null>) => {
@@ -96,9 +115,9 @@ export default function QuizRunner() {
       playSound(jumpAudioRef);
     }
   }, []);
-
-  const saveScoreToSheet = async (finalScore: number) => {
+const saveScoreToSheet = async (finalScore: number) => {
     const currentName = playerNameRef.current;
+    const currentLocation = playerLocationRef.current || "Unknown";
     if (!currentName.trim()) return; 
     
     setIsSaving(true);
@@ -106,15 +125,36 @@ export default function QuizRunner() {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: "POST",
         mode: "no-cors", 
-        headers: {
-          "Content-Type": "text/plain;charset=utf-8", 
-        },
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify({
-          type: "score", // <-- Tells backend this is a score update
+          type: "score",
           name: currentName, 
-          score: finalScore
+          location: currentLocation,
+          score: finalScore,
+          uid: deviceId
         }),
       });
+
+      // --- NEW: OPTIMISTICALLY UPDATE LOCAL LEADERBOARD WITHOUT DUPLICATES ---
+      setLeaderboard(prev => {
+        let newBoard = [...prev];
+        const normalizedName = currentName.toLowerCase().trim();
+        const existingIndex = newBoard.findIndex(p => p.name.toLowerCase().trim() === normalizedName);
+
+        if (existingIndex >= 0) {
+          // If player exists, only update if the new score is higher
+          if (finalScore > newBoard[existingIndex].score) {
+            newBoard[existingIndex] = { ...newBoard[existingIndex], score: finalScore, location: currentLocation };
+          }
+        } else {
+          // If it's a new player, add them
+          newBoard.push({ name: currentName, location: currentLocation, score: finalScore });
+        }
+
+        // Re-sort and keep top 10
+        return newBoard.sort((a, b) => b.score - a.score).slice(0, 10);
+      });
+
     } catch (error) {
       console.error("Failed to save score:", error);
     } finally {
@@ -122,7 +162,6 @@ export default function QuizRunner() {
     }
   };
 
-  // --- NEW FEEDBACK FUNCTION ---
   const sendFeedbackToSheet = async () => {
     const currentName = playerNameRef.current;
     if (!feedbackText.trim()) return;
@@ -132,11 +171,9 @@ export default function QuizRunner() {
       await fetch(GOOGLE_SCRIPT_URL, {
         method: "POST",
         mode: "no-cors",
-        headers: {
-          "Content-Type": "text/plain;charset=utf-8",
-        },
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
         body: JSON.stringify({
-          type: "feedback", // <-- Tells backend this is feedback
+          type: "feedback", 
           name: currentName,
           feedback: feedbackText
         }),
@@ -159,7 +196,7 @@ export default function QuizRunner() {
     setScore(0);
     setQIndex(0);
     setOptIndex(0);
-    setFeedbackSent(false); // Reset feedback UI when they play again
+    setFeedbackSent(false); 
     setFeedbackText('');
     gameInfo.current = { qIndex: 0, optIndex: 0, isPlaying: true, score: 0 }; 
     
@@ -269,16 +306,13 @@ export default function QuizRunner() {
     };
   }, [gameState, gameLoop]);
 
-// Keyboard controls
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // FIX: Only prevent default spacebar behavior IF the game is actively running
       if (gameState === 'playing' && (e.code === 'Space' || e.code === 'ArrowUp')) {
-        e.preventDefault(); 
+        e.preventDefault();
         jump();
       }
     };
-    
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [gameState, jump]);
@@ -292,21 +326,13 @@ export default function QuizRunner() {
     );
   }
 
-  if (questions.length === 0) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center text-white">
-        <h2>Error: Could not load questions from database.</h2>
-      </div>
-    );
-  }
-
   const currentQuestion = questions[qIndex];
   const currentOption = currentQuestion?.options[optIndex];
 
   return (
-    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-white p-4">
+    <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-start font-sans text-white p-4 overflow-y-auto">
       
-      <div className="w-full max-w-4xl flex justify-between items-center mb-6 px-4">
+      <div className="w-full max-w-4xl flex justify-between items-center mb-6 mt-10 px-4">
         <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-full border border-white/20 relative">
           <Trophy className="text-yellow-400" size={20} />
           <span className="font-bold tracking-wide">SCORE: {score}</span>
@@ -316,7 +342,7 @@ export default function QuizRunner() {
       </div>
 
       <div 
-        className="relative w-full max-w-4xl h-80 bg-slate-900 border-2 border-slate-700 rounded-2xl overflow-hidden shadow-2xl"
+        className="relative w-full max-w-4xl h-80 bg-slate-900 border-2 border-slate-700 rounded-2xl overflow-hidden shadow-2xl flex-shrink-0"
         onClick={jump} 
       >
         
@@ -364,12 +390,12 @@ export default function QuizRunner() {
 
         {gameState === 'start' && (
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center z-30">
-            <h1 className="text-4xl font-extrabold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">Quiz Runner 🏃‍♂️</h1>
-            <p className="text-slate-300 mb-6 max-w-md text-center">
-              Jump over the wrong answers using <b>Spacebar</b> or <b>Tap</b>. <br/> Run directly into the correct answer to score!
+            <h1 className="text-4xl font-extrabold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">Quiz Runner 🏃‍♂️</h1>
+            <p className="text-slate-300 mb-6 max-w-md text-center text-sm">
+              Jump over the wrong answers. Run into the correct one!
             </p>
             
-            <div className="mb-6 w-full max-w-xs">
+            <div className="mb-4 w-full max-w-xs space-y-3">
               <input 
                 type="text" 
                 placeholder="Enter your name..." 
@@ -379,16 +405,24 @@ export default function QuizRunner() {
                   playerNameRef.current = e.target.value; 
                 }}
                 className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500 transition-colors"
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') startGame();
+              />
+              <input 
+                type="text" 
+                placeholder="Location (e.g., London, UK)" 
+                value={playerLocation}
+                onChange={(e) => {
+                  setPlayerLocation(e.target.value);
+                  playerLocationRef.current = e.target.value; 
                 }}
+                onKeyDown={(e) => { if (e.key === 'Enter') startGame(); }}
+                className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500 transition-colors"
               />
             </div>
 
             <button 
               onClick={startGame} 
               disabled={!playerName.trim()}
-              className={`flex items-center gap-2 px-8 py-3 font-bold rounded-full transition-transform ${
+              className={`flex items-center gap-2 px-8 py-3 mt-2 font-bold rounded-full transition-transform ${
                 playerName.trim() 
                   ? 'bg-pink-600 hover:bg-pink-500 text-white hover:scale-105 active:scale-95' 
                   : 'bg-slate-700 text-slate-400 cursor-not-allowed'
@@ -404,22 +438,20 @@ export default function QuizRunner() {
             <h2 className="text-4xl font-black text-red-500 mb-1">GAME OVER</h2>
             <p className="text-slate-300 mb-4 text-lg">You hit the wrong answer!</p>
             
-            {/* NEW FEEDBACK FORM */}
             <div className="w-full max-w-sm bg-black/40 p-5 rounded-2xl border border-white/10 mb-6 shadow-xl">
-              <h3 className="text-sm font-bold text-slate-200 mb-3 text-center">Any message for me?</h3>
-              
+              <h3 className="text-sm font-bold text-slate-200 mb-3 text-center">Spotted a bug or have an idea?</h3>
               {!feedbackSent ? (
                 <div className="flex flex-col gap-3">
                   <textarea 
                     placeholder="Tell me what you think..." 
                     value={feedbackText}
                     onChange={(e) => setFeedbackText(e.target.value)}
-                    className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600 rounded-xl text-white text-sm placeholder-slate-400 focus:outline-none focus:border-pink-500 resize-none h-20 transition-colors"
+                    className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600 rounded-xl text-white text-sm placeholder-slate-400 focus:outline-none focus:border-pink-500 resize-none h-16 transition-colors"
                   />
                   <button 
                     onClick={sendFeedbackToSheet}
                     disabled={!feedbackText.trim() || isSendingFeedback}
-                    className="flex items-center justify-center gap-2 w-full py-2.5 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors"
+                    className="flex items-center justify-center gap-2 w-full py-2 bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition-colors"
                   >
                     {isSendingFeedback ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
                     {isSendingFeedback ? "Sending..." : "Submit Feedback"}
@@ -428,7 +460,6 @@ export default function QuizRunner() {
               ) : (
                 <div className="text-center py-4 bg-green-500/10 rounded-xl border border-green-500/30">
                   <p className="text-green-400 font-bold">Feedback Sent! 💖</p>
-                  <p className="text-xs text-slate-300 mt-1">Thank you for letting me know.</p>
                 </div>
               )}
             </div>
@@ -451,38 +482,65 @@ export default function QuizRunner() {
       </div>
 
       <button 
-        className="mt-8 md:hidden px-16 py-4 bg-white/10 active:bg-white/20 border border-white/20 rounded-full text-xl font-bold tracking-widest shadow-lg"
+        className="mt-6 mb-4 md:hidden px-16 py-4 bg-white/10 active:bg-white/20 border border-white/20 rounded-full text-xl font-bold tracking-widest shadow-lg"
         onClick={jump}
       >
         JUMP
       </button>
 
+      {/* --- LEADERBOARD SECTION --- */}
+      <div className="w-full max-w-4xl mt-8 mb-12">
+        <div className="flex items-center gap-2 mb-4 px-2">
+          <Medal className="text-yellow-400" size={28} />
+          <h2 className="text-2xl font-bold text-white tracking-wide">Top 10 High Scores</h2>
+        </div>
+
+        <div className="bg-slate-900/80 backdrop-blur border border-slate-700 rounded-2xl overflow-hidden shadow-2xl">
+          {leaderboard.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 italic">No scores yet. Be the first!</div>
+          ) : (
+            <ul className="divide-y divide-slate-800">
+              {leaderboard.map((entry, idx) => (
+                <li key={idx} className="flex items-center justify-between p-4 hover:bg-slate-800/50 transition-colors">
+                  <div className="flex items-center gap-4">
+                    <div className="font-black text-slate-500 w-6 text-center">{idx + 1}</div>
+                    
+                    {/* Auto-generated Pixel Avatar via DiceBear */}
+                    <div className="w-12 h-12 bg-slate-800 rounded-full overflow-hidden border-2 border-slate-600 flex-shrink-0">
+                      <img 
+                        src={`https://api.dicebear.com/7.x/pixel-art/svg?seed=${entry.name}`} 
+                        alt="avatar" 
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    
+                    <div className="flex flex-col">
+                      <span className="font-bold text-white text-lg">{entry.name}</span>
+                      <div className="flex items-center gap-1 text-xs text-slate-400">
+                        <MapPin size={12} />
+                        <span>{entry.location}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="font-black text-xl text-pink-400 bg-pink-500/10 px-4 py-1 rounded-full border border-pink-500/20">
+                    {entry.score}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+
       <style>
         {`
-          .road-stripes {
-            background-image: repeating-linear-gradient(90deg, transparent 0px, transparent 40px, rgba(255,255,255,0.2) 40px, rgba(255,255,255,0.2) 80px);
-          }
-          .animate-scrollRoad {
-            animation: scrollRoad 0.8s linear infinite;
-          }
-          .animate-runBounce {
-            animation: runBounce 0.3s alternate infinite;
-          }
-          .animate-slideDown {
-            animation: slideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1);
-          }
-          @keyframes scrollRoad {
-            from { transform: translateX(0); }
-            to { transform: translateX(-80px); }
-          }
-          @keyframes runBounce {
-            from { transform: translateY(0) scaleY(1); }
-            to { transform: translateY(-4px) scaleY(0.95); }
-          }
-          @keyframes slideDown {
-            from { opacity: 0; transform: translateY(-20px); }
-            to { opacity: 1; transform: translateY(0); }
-          }
+          .road-stripes { background-image: repeating-linear-gradient(90deg, transparent 0px, transparent 40px, rgba(255,255,255,0.2) 40px, rgba(255,255,255,0.2) 80px); }
+          .animate-scrollRoad { animation: scrollRoad 0.8s linear infinite; }
+          .animate-runBounce { animation: runBounce 0.3s alternate infinite; }
+          .animate-slideDown { animation: slideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+          @keyframes scrollRoad { from { transform: translateX(0); } to { transform: translateX(-80px); } }
+          @keyframes runBounce { from { transform: translateY(0) scaleY(1); } to { transform: translateY(-4px) scaleY(0.95); } }
+          @keyframes slideDown { from { opacity: 0; transform: translateY(-20px); } to { opacity: 1; transform: translateY(0); } }
         `}
       </style>
     </div>
