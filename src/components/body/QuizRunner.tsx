@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Trophy, RotateCcw, Play, Loader2, Send, MapPin, Medal } from 'lucide-react'; 
+import { Trophy, RotateCcw, Play, Loader2, Send, Medal } from 'lucide-react'; 
 import Player from '../../assets/player.png';
 import GameOverSound from '../../assets/faaaa.mp3'; 
 import JumpSound from '../../assets/jump.mp3'; 
@@ -10,16 +10,21 @@ const JUMP_STRENGTH = 10;
 const GAME_SPEED = 4;
 const GAME_WIDTH = 800;
 const GROUND_Y = 15;
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwozg_pEZ3jpGymOJqSu0mSNF-c1iFfAitQyN0s-xmalcHmW0aCph1py9plLksnDrS6/exec";
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwNx4fc_dD5fqa5Nta5kkryvH8uQ6TGe1Fk76nsd_MyCMfP_GRsQYzNVq-4-TQxUQ_xYg/exec";
 
 type QuestionType = { question: string; options: { text: string; isCorrect: boolean }[]; };
-type LeaderboardEntry = { name: string; location: string; score: number };
+type LeaderboardEntry = { name: string; score: number; category: string; difficulty: string; uid?: string };
 
 export default function QuizRunner() {
   const [playerName, setPlayerName] = useState('');
-  const [playerLocation, setPlayerLocation] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
   const [deviceId, setDeviceId] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  
+  // Game Settings State
+  const [category, setCategory] = useState('Computer Science');
+  const [difficulty, setDifficulty] = useState('Medium');
+  const [numQuestions, setNumQuestions] = useState(5);
+  const [isGenerating, setIsGenerating] = useState(false);
   
   const [feedbackText, setFeedbackText] = useState('');
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
@@ -30,7 +35,6 @@ export default function QuizRunner() {
   const [isLoadingDB, setIsLoadingDB] = useState(true);
 
   const playerNameRef = useRef('');
-  const playerLocationRef = useRef('');
 
   const [gameState, setGameState] = useState('start'); 
   const [score, setScore] = useState(0);
@@ -50,55 +54,36 @@ export default function QuizRunner() {
   const gameOverAudioRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
-    // Check if this browser already has a secret ID
+    // Generate or fetch UID
     let storedId = localStorage.getItem('quiz_runner_uid');
-    
-    // If not, create a random one and save it!
     if (!storedId) {
       storedId = 'player_' + Math.random().toString(36).substring(2, 15);
       localStorage.setItem('quiz_runner_uid', storedId);
     }
     setDeviceId(storedId);
-  }, []);
-  useEffect(() => {
+
+    // Audio Preload
     jumpAudioRef.current = new Audio(JumpSound);
     jumpAudioRef.current.volume = 0.5; 
     correctAudioRef.current = new Audio(CorrectSound);
     gameOverAudioRef.current = new Audio(GameOverSound);
 
-    const fetchData = async () => {
+    // Fetch Initial Leaderboard
+    const fetchLeaderboard = async () => {
       try {
-        // Fetch Questions
-        const qRes = await fetch(GOOGLE_SCRIPT_URL);
-        const qResult = await qRes.json();
-        
-        if (qResult.status === 'success' && qResult.data.length > 0) {
-          const formattedQuestions: QuestionType[] = qResult.data.map((q: any) => ({
-            question: q.question,
-            options: [
-              { text: q.opt1, isCorrect: q.correctOpt === 1 },
-              { text: q.opt2, isCorrect: q.correctOpt === 2 },
-              { text: q.opt3, isCorrect: q.correctOpt === 3 },
-            ]
-          }));
-          setQuestions(formattedQuestions);
-        }
-
-        // Fetch Leaderboard
         const lRes = await fetch(`${GOOGLE_SCRIPT_URL}?action=getLeaderboard`);
         const lResult = await lRes.json();
         if (lResult.status === 'success') {
           setLeaderboard(lResult.data);
         }
-
       } catch (error) {
-        console.error("Failed to fetch data", error);
+        console.error("Failed to fetch leaderboard", error);
       } finally {
         setIsLoadingDB(false);
       }
     };
 
-    fetchData();
+    fetchLeaderboard();
   }, []);
 
   const playSound = (audioRef: React.MutableRefObject<HTMLAudioElement | null>) => {
@@ -115,9 +100,9 @@ export default function QuizRunner() {
       playSound(jumpAudioRef);
     }
   }, []);
-const saveScoreToSheet = async (finalScore: number) => {
+
+  const saveScoreToSheet = async (finalScore: number) => {
     const currentName = playerNameRef.current;
-    const currentLocation = playerLocationRef.current || "Unknown";
     if (!currentName.trim()) return; 
     
     setIsSaving(true);
@@ -129,32 +114,30 @@ const saveScoreToSheet = async (finalScore: number) => {
         body: JSON.stringify({
           type: "score",
           name: currentName, 
-          location: currentLocation,
           score: finalScore,
-          uid: deviceId
+          uid: deviceId,
+          category: category,
+          difficulty: difficulty
         }),
       });
 
-      // --- NEW: OPTIMISTICALLY UPDATE LOCAL LEADERBOARD WITHOUT DUPLICATES ---
+      // Optimistically update local leaderboard
       setLeaderboard(prev => {
         let newBoard = [...prev];
         const normalizedName = currentName.toLowerCase().trim();
-        const existingIndex = newBoard.findIndex(p => p.name.toLowerCase().trim() === normalizedName);
+        const existingIndex = newBoard.findIndex(p => 
+          (p.uid === deviceId) || (!p.uid && p.name.toLowerCase().trim() === normalizedName)
+        );
 
         if (existingIndex >= 0) {
-          // If player exists, only update if the new score is higher
           if (finalScore > newBoard[existingIndex].score) {
-            newBoard[existingIndex] = { ...newBoard[existingIndex], score: finalScore, location: currentLocation };
+            newBoard[existingIndex] = { ...newBoard[existingIndex], score: finalScore, category, difficulty };
           }
         } else {
-          // If it's a new player, add them
-          newBoard.push({ name: currentName, location: currentLocation, score: finalScore });
+          newBoard.push({ name: currentName, score: finalScore, category, difficulty, uid: deviceId });
         }
-
-        // Re-sort and keep top 10
         return newBoard.sort((a, b) => b.score - a.score).slice(0, 10);
       });
-
     } catch (error) {
       console.error("Failed to save score:", error);
     } finally {
@@ -172,11 +155,7 @@ const saveScoreToSheet = async (finalScore: number) => {
         method: "POST",
         mode: "no-cors",
         headers: { "Content-Type": "text/plain;charset=utf-8" },
-        body: JSON.stringify({
-          type: "feedback", 
-          name: currentName,
-          feedback: feedbackText
-        }),
+        body: JSON.stringify({ type: "feedback", name: currentName, feedback: feedbackText }),
       });
       setFeedbackSent(true);
       setFeedbackText('');
@@ -187,25 +166,61 @@ const saveScoreToSheet = async (finalScore: number) => {
     }
   };
 
-  const startGame = () => {
+  const startGame = async () => {
     if (!playerName.trim()) {
       alert("Please enter your name to start!");
       return;
     }
     
-    setScore(0);
-    setQIndex(0);
-    setOptIndex(0);
-    setFeedbackSent(false); 
-    setFeedbackText('');
-    gameInfo.current = { qIndex: 0, optIndex: 0, isPlaying: true, score: 0 }; 
+    setIsGenerating(true);
     
-    playerY.current = GROUND_Y;
-    velocityY.current = 0;
-    isJumping.current = false;
-    obstacleX.current = GAME_WIDTH;
-    
-    setGameState('playing');
+    try {
+      const res = await fetch(GOOGLE_SCRIPT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          type: "generate_quiz",
+          category: category,
+          difficulty: difficulty,
+          numQuestions: numQuestions
+        })
+      });
+      
+      const result = await res.json();
+
+      if (result.status === 'success') {
+        const formattedQuestions: QuestionType[] = result.data.map((q: any) => ({
+          question: q.question,
+          options: [
+            { text: q.opt1, isCorrect: q.correctOpt === 1 },
+            { text: q.opt2, isCorrect: q.correctOpt === 2 },
+            { text: q.opt3, isCorrect: q.correctOpt === 3 },
+          ]
+        }));
+        setQuestions(formattedQuestions);
+        
+        setScore(0);
+        setQIndex(0);
+        setOptIndex(0);
+        setFeedbackSent(false); 
+        setFeedbackText('');
+        gameInfo.current = { qIndex: 0, optIndex: 0, isPlaying: true, score: 0 }; 
+        
+        playerY.current = GROUND_Y;
+        velocityY.current = 0;
+        isJumping.current = false;
+        obstacleX.current = GAME_WIDTH;
+        
+        setGameState('playing');
+      } else {
+        alert("AI failed to generate questions. Please try again.");
+      }
+    } catch (error) {
+      console.error("Failed to generate quiz", error);
+      alert("Failed to connect to the AI server.");
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleCorrectAnswer = () => {
@@ -244,7 +259,6 @@ const saveScoreToSheet = async (finalScore: number) => {
     if (isJumping.current) {
       playerY.current += velocityY.current;
       velocityY.current -= GRAVITY;
-
       if (playerY.current <= GROUND_Y) {
         playerY.current = GROUND_Y;
         isJumping.current = false;
@@ -281,7 +295,6 @@ const saveScoreToSheet = async (finalScore: number) => {
       obstacleX.current = GAME_WIDTH;
       const currentQ = questions[gameInfo.current.qIndex];
       const nextOpt = (gameInfo.current.optIndex + 1) % currentQ.options.length;
-      
       setOptIndex(nextOpt);
       gameInfo.current.optIndex = nextOpt;
     }
@@ -296,14 +309,8 @@ const saveScoreToSheet = async (finalScore: number) => {
   }, [questions]);
 
   useEffect(() => {
-    if (gameState === 'playing') {
-      requestRef.current = requestAnimationFrame(gameLoop);
-    }
-    return () => {
-      if (requestRef.current !== null) {
-        cancelAnimationFrame(requestRef.current);
-      }
-    };
+    if (gameState === 'playing') { requestRef.current = requestAnimationFrame(gameLoop); }
+    return () => { if (requestRef.current !== null) cancelAnimationFrame(requestRef.current); };
   }, [gameState, gameLoop]);
 
   useEffect(() => {
@@ -321,7 +328,7 @@ const saveScoreToSheet = async (finalScore: number) => {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-white p-4">
         <Loader2 className="animate-spin text-pink-500 mb-4" size={48} />
-        <h2 className="text-2xl font-bold animate-pulse">Loading Game Data...</h2>
+        <h2 className="text-2xl font-bold animate-pulse">Loading Server Data...</h2>
       </div>
     );
   }
@@ -345,6 +352,17 @@ const saveScoreToSheet = async (finalScore: number) => {
         className="relative w-full max-w-4xl h-80 bg-slate-900 border-2 border-slate-700 rounded-2xl overflow-hidden shadow-2xl flex-shrink-0"
         onClick={jump} 
       >
+        
+        {/* NEW AI GENERATING LOADER OVERLAY */}
+        {isGenerating && (
+          <div className="absolute inset-0 bg-slate-950/95 backdrop-blur-md flex flex-col items-center justify-center z-50">
+            <Loader2 size={56} className="animate-spin text-pink-500 mb-6" />
+            <h2 className="text-2xl font-bold text-white mb-2 text-center">AI is writing the quiz...</h2>
+            <p className="text-pink-300 font-medium text-center animate-pulse px-4">
+              Your questions are getting ready please hold on
+            </p>
+          </div>
+        )}
         
         {gameState === 'playing' && (
           <div className="absolute top-6 left-0 right-0 z-20 flex justify-center animate-slideDown">
@@ -388,7 +406,7 @@ const saveScoreToSheet = async (finalScore: number) => {
           </>
         )}
 
-        {gameState === 'start' && (
+        {gameState === 'start' && !isGenerating && (
           <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center z-30">
             <h1 className="text-4xl font-extrabold mb-2 text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">Quiz Runner 🏃‍♂️</h1>
             <p className="text-slate-300 mb-6 max-w-md text-center text-sm">
@@ -400,23 +418,31 @@ const saveScoreToSheet = async (finalScore: number) => {
                 type="text" 
                 placeholder="Enter your name..." 
                 value={playerName}
-                onChange={(e) => {
-                  setPlayerName(e.target.value);
-                  playerNameRef.current = e.target.value; 
-                }}
-                className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500 transition-colors"
+                onChange={(e) => { setPlayerName(e.target.value); playerNameRef.current = e.target.value; }}
+                className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-pink-500 transition-colors"
               />
-              <input 
-                type="text" 
-                placeholder="Location (e.g., London, UK)" 
-                value={playerLocation}
-                onChange={(e) => {
-                  setPlayerLocation(e.target.value);
-                  playerLocationRef.current = e.target.value; 
-                }}
-                onKeyDown={(e) => { if (e.key === 'Enter') startGame(); }}
-                className="w-full px-4 py-3 bg-slate-800/50 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:border-pink-500 focus:ring-1 focus:ring-pink-500 transition-colors"
-              />
+              
+              <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full px-4 py-2.5 bg-slate-800/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-pink-500 appearance-none">
+                <option value="Computer Science">Computer Science</option>
+                <option value="Medical Science">Medical Science</option>
+                <option value="World News">World News</option>
+                <option value="Pop Culture">Pop Culture</option>
+              </select>
+
+              <div className="flex gap-2">
+                <select value={difficulty} onChange={(e) => setDifficulty(e.target.value)} className="w-1/2 px-4 py-2.5 bg-slate-800/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-pink-500 appearance-none">
+                  <option value="Easy">Easy</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Hard">Hard</option>
+                </select>
+
+                <select value={numQuestions} onChange={(e) => setNumQuestions(Number(e.target.value))} className="w-1/2 px-4 py-2.5 bg-slate-800/50 border border-slate-600 rounded-lg text-white focus:outline-none focus:border-pink-500 appearance-none">
+                  <option value={5}>5 Questions</option>
+                  <option value={10}>10 Questions</option>
+                  <option value={15}>15 Questions</option>
+                  <option value={20}>20 Questions</option>
+                </select>
+              </div>
             </div>
 
             <button 
@@ -464,8 +490,8 @@ const saveScoreToSheet = async (finalScore: number) => {
               )}
             </div>
 
-            <button onClick={startGame} className="flex items-center gap-2 px-8 py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-full transition-transform hover:scale-105">
-              <RotateCcw size={20} /> Try Again
+            <button onClick={() => setGameState('start')} className="flex items-center gap-2 px-8 py-3 bg-red-600 hover:bg-red-500 text-white font-bold rounded-full transition-transform hover:scale-105">
+              <RotateCcw size={20} /> New Game
             </button>
           </div>
         )}
@@ -474,7 +500,7 @@ const saveScoreToSheet = async (finalScore: number) => {
           <div className="absolute inset-0 bg-green-950/90 backdrop-blur-sm flex flex-col items-center justify-center z-30 animate-fadeIn">
             <h2 className="text-4xl font-black text-green-400 mb-2">YOU WIN! 🎉</h2>
             <p className="text-slate-300 mb-6 text-lg">Final Score: {score}</p>
-            <button onClick={startGame} className="flex items-center gap-2 px-8 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-full transition-transform hover:scale-105">
+            <button onClick={() => setGameState('start')} className="flex items-center gap-2 px-8 py-3 bg-green-600 hover:bg-green-500 text-white font-bold rounded-full transition-transform hover:scale-105">
               <RotateCcw size={20} /> Play Again
             </button>
           </div>
@@ -505,7 +531,6 @@ const saveScoreToSheet = async (finalScore: number) => {
                   <div className="flex items-center gap-4">
                     <div className="font-black text-slate-500 w-6 text-center">{idx + 1}</div>
                     
-                    {/* Auto-generated Pixel Avatar via DiceBear */}
                     <div className="w-12 h-12 bg-slate-800 rounded-full overflow-hidden border-2 border-slate-600 flex-shrink-0">
                       <img 
                         src={`https://api.dicebear.com/7.x/pixel-art/svg?seed=${entry.name}`} 
@@ -515,10 +540,16 @@ const saveScoreToSheet = async (finalScore: number) => {
                     </div>
                     
                     <div className="flex flex-col">
-                      <span className="font-bold text-white text-lg">{entry.name}</span>
-                      <div className="flex items-center gap-1 text-xs text-slate-400">
-                        <MapPin size={12} />
-                        <span>{entry.location}</span>
+                      <span className="font-bold text-white text-lg leading-tight">{entry.name}</span>
+                      
+                      {/* CATEGORY AND DIFFICULTY BADGES */}
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-500/30 rounded-full">
+                          {entry.category}
+                        </span>
+                        <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 bg-orange-500/20 text-orange-300 border border-orange-500/30 rounded-full">
+                          {entry.difficulty}
+                        </span>
                       </div>
                     </div>
                   </div>
